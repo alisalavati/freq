@@ -1,69 +1,96 @@
-from functools import reduce
-from pandas import DataFrame
-from freqtrade.strategy import IStrategy
-
+from freqtrade.strategy.interface import IStrategy
+from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
+from typing import Dict, List
 import talib.abstract as ta
 
-from freqtrade.strategy.interface import IStrategy
-
 class TrendFollowingStrategy(IStrategy):
+    timeframe = '5m'
 
-    INTERFACE_VERSION: int = 3
+    # Buy hyperspace params:
+    buy_params = {
+        "buy_trailing": 0.98,
+        "buy_rsi": 53,
+        "buy_ema_1": 38,
+        "buy_ema_2": 68,
+        "buy_williamsr": -98
+    }
+
+    # Sell hyperspace params:
+    sell_params = {
+        "sell_trailing": 1.01,
+        "sell_rsi": 43,
+        "sell_ema_1": 60,
+        "sell_ema_2": 28,
+        "sell_williamsr": -34
+    }
+
     # ROI table:
-    minimal_roi = {"0": 0.15, "30": 0.1, "60": 0.05}
-    # minimal_roi = {"0": 1}
+    minimal_roi = {
+        "0": 0.05,
+        "30": 0.02,
+        "60": 0.01,
+        "120": 0
+    }
 
     # Stoploss:
-    stoploss = -0.265
+    stoploss = -0.1
 
     # Trailing stop:
     trailing_stop = True
-    trailing_stop_positive = 0.05
-    trailing_stop_positive_offset = 0.1
-    trailing_only_offset_is_reached = False
+    trailing_stop_positive = 0.01
+    trailing_stop_positive_offset = 0.02
+    trailing_only_offset_is_reached = True
 
-    timeframe = "5m"
+    # Optimal timeframe for the strategy
+    optimal_timeframe = '5m'
 
-    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Calculate OBV
-        dataframe['obv'] = ta.OBV(dataframe['close'], dataframe['volume'])
-        
-        # Add your trend following indicators here
-        dataframe['trend'] = dataframe['close'].ewm(span=20, adjust=False).mean()
-        
-        return dataframe
-    
-    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Add your trend following buy signals here
-        dataframe.loc[
-            (dataframe['close'] > dataframe['trend']) & 
-            (dataframe['close'].shift(1) <= dataframe['trend'].shift(1)) &
-            (dataframe['obv'] > dataframe['obv'].shift(1)), 
-            'enter_long'] = 1
-        
-        # Add your trend following sell signals here
-        dataframe.loc[
-            (dataframe['close'] < dataframe['trend']) & 
-            (dataframe['close'].shift(1) >= dataframe['trend'].shift(1)) &
-            (dataframe['obv'] < dataframe['obv'].shift(1)), 
-            'enter_short'] = -1
-        
-        return dataframe
+    # Optional order type mapping
+    order_types = {
+        'buy': 'limit',
+        'sell': 'limit',
+        'stoploss': 'market',
+        'stoploss_on_exchange': False
+    }
 
-    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Add your trend following exit signals for long positions here
-        dataframe.loc[
-            (dataframe['close'] < dataframe['trend']) & 
-            (dataframe['close'].shift(1) >= dataframe['trend'].shift(1)) &
-            (dataframe['obv'] > dataframe['obv'].shift(1)), 
-            'exit_long'] = 1
-        
-        # Add your trend following exit signals for short positions here
-        dataframe.loc[
-            (dataframe['close'] > dataframe['trend']) & 
-            (dataframe['close'].shift(1) <= dataframe['trend'].shift(1)) &
-            (dataframe['obv'] < dataframe['obv'].shift(1)), 
-            'exit_short'] = 1
-        
+    # Optional order time in force mapping
+    order_time_in_force = {
+        'buy': 'gtc',
+        'sell': 'gtc'
+    }
+
+    def populate_indicators(self, dataframe: dict, metadata: dict) -> dict:
+        # EMA
+        dataframe['ema_1'] = ta.EMA(dataframe, timeperiod=14)
+        dataframe['ema_2'] = ta.EMA(dataframe, timeperiod=28)
+
+        # RSI
+        dataframe['rsi'] = ta.RSI(dataframe, timeperiod=14)
+
+        # Williams %R
+        dataframe['williams_r'] = ta.WILLR(dataframe, timeperiod=14)
+
         return dataframe
 
+    def populate_buy_trend(self, dataframe: dict, metadata: dict) -> dict:
+        dataframe.loc[
+            (
+                (dataframe['close'] > dataframe['ema_1']) &
+                (dataframe['ema_1'] > dataframe['ema_2']) &
+                (dataframe['rsi'] > self.buy_rsi.value) &
+                (dataframe['williams_r'] < self.buy_williamsr.value)
+            ),
+            'buy'
+        ] = 1
+
+        return dataframe
+
+    def populate_sell_trend(self, dataframe: dict, metadata: dict) -> dict:
+        dataframe.loc[
+            (
+                (dataframe['close'] < dataframe['ema_1']) &
+                (dataframe['ema_1'] < dataframe['ema_2']) &
+                (dataframe['rsi'] < self.sell_rsi.value) &
+                (dataframe['williams_r'] > self.sell_williamsr.value)
+            ),
+            'sell'
+        ] = 1
